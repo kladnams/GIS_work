@@ -1,0 +1,370 @@
+---
+title: "Assignment 3_KA"
+author: "Katie Adnams"
+date: "1 January 2019"
+output:
+  html_document: default
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+```{r libraries, echo = FALSE, include=FALSE}
+
+library(tidyverse)
+library(plyr)
+library(dplyr)
+library(tidyr)
+library(spatstat)
+library(sp)
+library(rgeos)
+library(maptools)
+library(GISTools)
+library(tmap)
+library(sf)
+library(geojsonio)
+library(tmaptools)
+library(rgdal)
+library(fpc) 
+library(reshape2)
+library(plotly)
+library(highcharter)
+library(spdep)
+library(knitr)
+
+tmap_mode("view")
+#tmap_mode("plot")
+
+```
+
+# Mini project:
+# Spatial pattern analysis of developments in London: Evaluating alignment with London Plan policies and the use of brownfield sites 
+
+*Note: document best viewed in html format, to view the maps interactively*
+
+## Introduction
+
+This mini-project visualizes development in Greater London from 2006 and analyses its spatial patterns, allowing the user to assess collective characteristics. Planning Application (PA) consent data is used for this purpose, sourced from the London Development Database (LDD).
+In most cases PA’s are reviewed and approved at local authority level (Town & Country Planning Act 1990) Although decisions reference the London Plan, there is little publicly available visualisation of the impact or pace of development across authority boundaries or how, as a whole, they align with London Plan policies. 
+Therefore, this project proposes that aggregated, up-to-date analysis of PA’s could reveal wider development trends across London. Mapping the aggregate characteristics of developments could support decision-making on PA’s and regeneration schemes, also assessing how development aligns with London Plan policies. 
+This project maps the density and extent of development, and produces measures in response to London Plan policies relating to brownfield development, open spaces and residential provision. Spatial autocorrelation is assessed by means of point pattern analysis and mapping hotspots of development, comparing the results with the London Plan’s Opportunity Areas (OAs).
+
+
+## Context
+
+From 2004, the London Plan has provided the framework and overarching objectives for developments in Greater London (London Plan, 2016). Policies are based on addressing key challenges and creating a globally competitive, equitable city (ibid., p13-14); in conjunction with Local Plans they form the basis on which PAs are determined (Town & Country Planning Act 1990, S21A).
+OAs were formally identified in the 2015 London Plan, which includes 28 adopted areas (London Datastore, 2018). These are major brownfield sites identified as having significant potential for development and densification, providing new housing and employment (Annex 1, London Plan, 2015). 
+Reviews of the London Plan are carried out periodically, quantitatively assessing progress in implementing its policies (London Plan Annual Monitoring Report, 2018). Although the reports are detailed and transparent, there is little data visualization, and an assessment of OAs is not currently available other than as counts of housing developments. This project thus reviews the development characteristics of OA’s and PA spatial patterns. 
+
+
+### Data source
+
+The LDD dataset used includes PA consents from 2006 to 2018. Developments are recorded in the database where they meet the following criteria (GLA, 2018):
+
+*Criteria:*
+![LDD criteria](LDD_criteria.tiff)
+
+This dataset is mapped online as point data, but there is no visualization of their collective impact. To assess the PA attributes and assess development characteristics, the following measures are derived from the data (by m2) and used for this project: 
+
+*	Number of PA’s
+*	Total site area developed 
+*	Total site area for residential provision
+*	Total change in open space area 
+
+Measures of changes in open space and the extent of residential provision relate to policies in the London Plan, detailing the need to increase housing supply and protect open spaces (London Plan 2016, policies 3.3 & 7.18).
+
+## Methodology
+
+### Choice of software 
+
+Code-based software R is employed for the analysis, with spatial analysis libraries and tmap for visualization. Tmaps is selected for ability to create facetted interactive maps, to visualise large datasets at varying scales. This allows user flexibility in choosing an area of interest in London, which is useful for exploratory analysis. Spatial analysis methods such as Density Clustering and the ability to produce KDE maps were readily available with R packages, a benefit of open-source software. As ArcGIS is proprietary, many tools require purchasing a license. As the LDD dataset is routinely updated, the intention is for the code to be executed with updated csv files to produce up-to-date visualisations. R benefits from the ability to import data without prior manual formatting, a restriction with GUI-based software like ArcGIS. 
+
+### Data preparation
+
+The PA dataset was imported as point data and cleaned prior to analysis. Geographical outliers were removed, and certain PA types were excluded when numerous applications related to one development, thus omitting duplicate developments. The measures were calculated with the point dataset, and then aggregated by MSOA to create continuous variables, standardized by area. MSOA boundaries were selected as they account for the population density of the area, and give a further level of detail than borough boundaries.    
+
+
+```{r Data Cleaning}
+#read in uncleaned csv
+planningData2 <- read_csv("LDDplanningData_R.csv", na = "")
+
+# look at boxplots to identify outliers 
+boxplot(planningData2$Easting,main='Easting points', ylab = "Easting")
+boxplot(planningData2$Northing,main='Northing points', ylab = "Northing")
+
+# cleaned csv read in (refer to full code for cleaning process) 
+planningData3 <- read_csv("PlanningData_Rcleaned.csv", na = "")
+
+#print head of the dataset and relevent columns
+planningData3[1:5,c(3,6,12,13,22,26,34)]
+  
+
+#plot point data map quickly to see what the point data looks like
+ggplot(planningData3, aes(x=Easting, y=Northing))+
+  geom_point()+ coord_equal()
+
+
+```
+```{r MSOA aggregated data}
+#read in dataset by MSOA - for full process see full code 
+MSOADataMapSF2 <- readOGR("MSOADataMap_3.shp", layer="MSOADataMap_3")
+MSOADataMapDF <- as.data.frame(MSOADataMapSF2)
+MSOADataMapDF[1:5, c(1,2,14,17,24,26,30)]
+  
+```
+
+
+### Analysis
+
+#### 1. Point patterns
+To visualise the density of PA’s without aggregation by authority or census boundaries, a KDE is produced from the point data. To identify the location of clusters in more detail, a density-based clustering algorithm is employed, DBSCAN. DBSCAN is selected as it is less affected by noise than other cluster algorithms, and the number of resulting clusters isn’t predetermined (Ester et al., 1996). 
+The cluster outputs were mapped against OA polygons and the number of developments within the areas was determined by spatial intersect. Through this and the clusters we can both visually and quantitatively determine what proportion of London’s PA’s are within identified brownfield site areas. 
+
+
+#### 2. Continuous variables - hotspot analysis 
+The aggregated MSOA dataset allows us to look at the attributes of the point data as well as their density.  Global spatial autocorrelation statistics are calculated for the PA density to assess if clustering is present, and local Getis-Ord (GI*) Statistic (Ord and Getis, 1995) is mapped to identify statistically significant hotpots of development characteristics. 
+The local GI* statistic for the measures are mapped with OA polygons, to assess not only whether OA’s have higher or lower values compared to the rest of London (as mapped by choropleths), but also to assess if they are statistically significant and clustered within OA’s. 
+The results help the user to understand how development within OAs compares to wider trends of development in London. 
+ 
+
+## Results 
+The final tool visualizes the results, which each help the user to understand how development within opportunity areas compares to wider trends of development in London:
+
+### 1.	Point patterns
+
+The KDE map below shows a central density of planning applications with smaller concentrations in outers parts of London (e.g. Richmond and Croydon). 
+
+```{r KDE}
+# GGPLOT of data points 
+    
+plotPoints <- ggplot(planningData3, aes(x=Easting, y=Northing))+
+  geom_point()+ coord_equal()
+
+#KDE estimation of point data
+KDE_plot <- plotPoints+stat_density2d(aes(fill = ..level..), geom="polygon")
+KDE_plot
+
+#2d histogram for reference 
+#londonpoint<-ggplot(planningData3, aes(x=Easting, y=Northing))+stat_bin2d(bins=20)
+#londonpoint
+
+```
+A density-based cluster analysis provides further information on the location of the clusters.  In this case a cluster was defined by 100 planning applications within 800 m2, resulting in 26 clusters. 
+
+*DBSCAN resulting clusters*
+![DBSCAN clusters](dbscan_results.tiff)
+
+The results show a substantial number of noise points, with the most significant cluster centrally located (cluster 2) encompassing over half the point data and extending South to Croydon. Noticeable clusters include the Stratford area (22) and a riverside ‘corridor’ of development from Richmond to Teddington (24). Other smaller clusters are visible on the fringes of Greater London. The input parameters were determined manually by mapping the point data, however epsilon could also be determined by the k-nearest neighbor distances in a points matrix.
+A spatial intersect of the point data with OAs show that 12.14% (7,336) of London planning applications between 2006-2018 were in the identified London Plan brownfield sites.
+The OA polygons are mapped as a layer with the cluster results. Areas such as Stratford and the Olympic park are a distinctive cluster which seem to align with the OAs, and clusters are observed around the Southall and Wembley OA’s. 
+
+```{r Cluster map}
+
+BNG = "+init=epsg:27700"
+
+#save planningShapeCoords data for markdown file
+#import file
+dbResults <- read_csv("DBSCAN_clusters.csv", na = "")
+
+#create some convex hull polygons to wrap around clusters points
+
+#get the convex hull coordinates from the cluster groups in the dataframe
+chulls <- ddply(dbResults, .(cluster), function(df) df[chull(df$coords.x1, df$coords.x2), ])
+# drop 0 cluster from the dataframe as it is noise
+chulls <- subset(chulls, cluster>=1)
+
+#now create a ggplot2 
+dbplot <- ggplot(data=dbResults, aes(coords.x1,coords.x2, colour=cluster, fill=cluster)) 
+#add the points in
+dbplot <- dbplot + geom_point()
+#now the convex hulls
+dbplot <- dbplot + geom_polygon(data = chulls, aes(coords.x1,coords.x2, group=cluster), alpha = 0.5) 
+# ggplot of clusters plot
+dbplot + theme_bw() + coord_equal()
+
+
+# Convert to sf to plot in tmap
+
+dbResults<- st_as_sf(dbResults,coords = c("coords.x1", "coords.x2"),crs = 27700)
+dbResults$cluster <- as.factor(dbResults$cluster)
+
+# Add the opp areas layer 
+LondonOppAreas <- readOGR("Adopted_Opportunity_Areas.shp", layer="Adopted_Opportunity_Areas")
+# Set projection as BNG 
+LondonOppAreasSF <- st_as_sf(LondonOppAreas) 
+LondonOppAreasSF <- st_transform(LondonOppAreasSF, 27700)
+
+
+#plot interactively the clusters (set to normal plot for word doc output) ----------
+tm_shape(dbResults) +
+  tm_dots("cluster", alpha = 0.5)+
+   tm_shape(LondonOppAreasSF) +
+  tm_polygons(col = NA, alpha = 0.5)
+
+
+```
+However, the London Riverside and Thamesmead OAs encompass noise points rather than clusters. As the clusters are counts of planning applications, we must first consider the attributes of the PA’s before concluding that such areas are not undergoing significant development. These areas may have fewer applications which relate to vast site areas.
+
+### 2.	Continuous data: 
+
+#### a.	Descriptive Statistics 
+An initial choropleth visualisation shows the user the planning application measures, aggregated by MSOA and by OA. 
+
+```{r faceted choropleths}
+#read in shapefile - already done above
+MSOADataMapSF2 <- readOGR("MSOADataMap_3.shp", layer="MSOADataMap_3")
+
+MSOADataMapSF2 <- st_as_sf(MSOADataMapSF2)
+MSOADataMapSF2 <- st_transform(MSOADataMapSF2, 27700)
+
+# tmap_mode("plot") #set to whichever mode 
+tm_shape(MSOADataMapSF2) +
+  tm_polygons(c("plnAppD", "ttlArP2","ttlRAP2","chnOPP2"), 
+              style="jenks",
+              palette=list("YlOrBr", "Purples","PuRd","Greens"),
+              title=c("No. of planning apps", "Total area developed",
+                      "Total area of residential development", "Change in Open Space area"))
+
+```
+
+```{r faceted histograms of measures}
+
+LondonSub2 <- st_set_geometry(MSOADataMapSF2[,c(1,14,24,26,30)],NULL)
+
+# facetting
+# step 1  - reshape the data for facetting 
+LondonMelt2 <- melt(LondonSub2, id.vars = 1)
+attach(LondonMelt2)
+
+# faceting plot
+hist2 <- ggplot(LondonMelt2, aes(x=value)) + geom_histogram(aes(y = ..density..)) + geom_density(colour="red", size=1, adjust=1)
+hist2 + facet_wrap(~ variable, scales="free")
+
+```
+
+From the maps and the plot we can see that each value has a skewed distribution with a long tail. the change in open space has many null values so any analysis results would be unreliable or skewed. 
+
+
+Choropleths of the opportunity areas:
+
+```{r opp area choropleths}
+#add the opportunity area layer
+
+OppMeasuresDataMapSF <- readOGR("OppMeasuresDataMap_1.shp", layer="OppMeasuresDataMap_1")
+
+# set BNG projection
+OppMeasuresDataMapSF <- st_as_sf(OppMeasuresDataMapSF) 
+OppMeasuresDataMapSF <- st_transform(OppMeasuresDataMapSF, 27700)
+
+#plot
+tm_shape(OppMeasuresDataMapSF) +
+  tm_polygons(c("AppsOpD", "ttlArP2","ttlRAP2","chnOPP2"), 
+              style="jenks",
+              palette=list("YlOrBr", "Purples","PuRd","Greens"),
+              title=c("No. of planning apps", "Total area developed",
+                      "Total area of residential development", "Change in Open Space area"))
+```
+
+#### b. Hotpots of development characteristics 
+The Global statistics below show a positive spatial autocorrelation, with clusters tending to form for high values. 
+
+Moran I statistic |    Expectation   |   Variance 
+------------------|------------------|------------------
+     0.4453939776 |   -0.0010183299  |   0.0003415099
+     
+*** 
+Geary C statistic standard deviate = 16.77, p-value <
+2.2e-16
+alternative hypothesis: Expectation greater than statistic
+sample estimates:
+
+Geary C statistic |      Expectation |    Variance 
+------------------|------------------|------------------
+     0.5470918031 |     1.0000000000 |   0.0007294223
+
+***
+Getis Ord GI* standard deviate = 17.774, p-value < 2.2e-16
+alternative hypothesis: greater sample estimates:
+
+Global G statistic |   Expectation    |    Variance 
+-------------------|------------------|------------------
+      1.412909e-03 |   1.018330e-03   |  4.928210e-10
+
+
+The Local GI* by MSOA gives us further information than that given by the choropleths on clusters of statistically significant values. We can see further information on areas towards the centre of London than was possible from the point pattern analysis, as well as some similar clusters to those previously observed. 
+
+```{r hotpots and opp areas}
+# add borough map layer for reference
+EW <- geojson_read("http://geoportal.statistics.gov.uk/datasets/8edafbe3276d4b56aec60991cbddda50_2.geojson", what = "sp")
+#pull out london 
+BoroughMap <- EW[grep("^E09",EW@data$lad15cd),]
+BNG = "+init=epsg:27700"
+BoroughMapBNG <- spTransform(BoroughMap,BNG)
+
+#add the hotspot data - for full code see R script. A spatial weights matrix was used to create this and the global statistics.
+
+MSOADataMapSAGI <- readOGR("MSOADataMap_hotSpots.shp", layer="MSOADataMap_hotSpots")
+
+
+# plot the data 
+GIColours<- rev(brewer.pal(8, "RdBu"))
+breaks1<-c(-1000,-2.58,-1.96,-1.65,1.65,1.96,2.58,1000)
+
+tm_shape(BoroughMapBNG) +
+  tm_polygons(col = NA, alpha = 0.2)+
+  tm_shape(MSOADataMapSAGI) +
+  tm_polygons(c("BLcGRz_pA","BLcGRz_tA","BLGR_RA","BLGR_OP"),
+              style="fixed",
+              breaks=breaks1,
+              palette=GIColours,
+              midpoint=NA,
+              title=c("Gi* Planning Apps","Gi* total area","Gi* total Resi area","Gi* Change in Open Space"))+
+    tm_shape(OppMeasuresDataMapSF) +
+     tm_polygons(col = NA, alpha = 0.5,lwd = 1.5)
+
+```
+
+By observing the areas within and bordering OAs, we can see that some do not have many significant clusters (e.g. Lea Valley). However, in some cases notable characteristics are observed; Greenwich Peninsula is a hotspot for PA density and the proportion of residential area, whereas London Riverside has cold-spots for PAs but has high value clusters for total area and residential area. Croydon is also observed as having a significant residential area development. 
+
+
+## Overall conclusions
+
+Aggregating the point data allows us to look at PA attributes to find trends and characteristics not observable with point pattern analysis, whereas the point analysis allows us to avoid any MAUP effect by observing clusters unaggregated by geographical boundaries. With both analyses, developments throughout London and within OAs are visualized collectively, allowing the user to analyse particular areas within a wider context. The central concentration of PAs suggests that applications are driven by various private interests rather than by government-prescribed development areas (the OAs), however the measures show that the proportion of developed area (residential and total) reveal a different tendency, characterized by smaller hotspots. 
+
+
+
+## Limitations and further research
+
+As a tool intended for exploratory analysis, the resulting maps and graph would be best formatted as a Shiny application, to integrate the results more coherently and interactively. 
+The accuracy of the data input was a limitation in assessing the development characteristics. Particularly in measuring the change in open space area, the extent of null values mean that the results are not conclusive or reliable. Local authorities don’t always record such measurements (London Plan Annual Monitoring Report, 2018) in detail, which is disadvantageous for considering the cumulative impact of developments and a risk in interpreting the results. 
+The OA’s are as set out in the 2015 London Plan, however the dataset includes planning applications from 2006. The purpose of this study was to review what level of development has occurred in major brownfield site areas and how they align with some of the London Plan’s policies, rather than specifically evaluating the success of the identified opportunity areas against their KPIs. However, this analysis could be developed in a more targeted way as a tool to support such monitoring and evaluation. It would be more accurate for this purpose to subset by years of OA adoption, and how far they are progressed.
+Further to this, as increasing employment is a key objective of OA’s (Annex 1, London Plan, 2015) the project could be expanded to include employment data for OAs. A temporal dataset would be required, related to small geographic areas such as LSOAs in order to align it with the OA’s. By including change in employment rates, the tool could be used to assess whether development is contributing to the needs of the population. 
+
+***
+
+####Dataset:
+Greater London Authority, 2018. LDD planning permissions (2006-2018). Licensed under the UK Open Government License. Available at: https://data.london.gov.uk/dataset/planning-permissions-on-the-london-development-database--ldd- [accessed 30.11.18]
+
+#### References:
+Ester, M., Kriegel, H.-P., Xu, X., 1996. A Density-Based Algorithm for Discovering Clusters in Large Spatial Databases with Noise 6.
+
+Kalogirou, S.,2017. Spatial Autocorrelation. Available at: https://cran.r-project.org/web/packages/lctools/vignettes/SpatialAutocorrelation.pdf  [accessed 20.12.18]
+
+London Development Database | London City Hall [WWW Document], 2018. Available at: https://www.london.gov.uk/what-we-do/planning/london-plan/london-development-database [accessed 5.12.18].
+
+GLA, 2016. London Plan, 2016. Available at: https://www.london.gov.uk/sites/default/files/the_london_plan_2016_jan_2017_fix.pdf [accessed 9.12.18]
+
+GLA, 2016. London Plan Annex: Opportunity and Intensification Areas. Available at: https://www.london.gov.uk/sites/default/files/the_london_plan_malp_march_2016_-_annex_1_-_opportunity_intensification_areas.pdf [accessed 10.12.18]
+
+GLA, 2018. London Plan annual monitoring report Sept 2018. Available at: https://www.london.gov.uk/sites/default/files/amr_14_final_20180927.pdf [accessed 15.12.18].
+
+Ord, J.K., Getis, A., 1995. Local Spatial Autocorrelation Statistics: Distributional Issues and an Application. Geographical Analysis 27, 286–306. https://doi.org/10.1111/j.1538-4632.1995.tb00912.x
+
+Town and Country Planning Act 1990 [WWW Document]. Available at: https://www.legislation.gov.uk/ukpga/1990/8/section/2A [accessed 1.12.18].
+
+
+
+
+
+
